@@ -9,6 +9,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- Wildberries can read rendered pages instead of the API: `WB_TRANSPORT=dom`
+  (default `api`) makes `wb_search` and `wb_card` open the search grid and the
+  product page in the operator's Chrome over CDP and parse their text, for
+  addresses where `card.wb.ru` / `search.wb.ru` and the site's own `/__internal/`
+  API answer 403 to every client (#101). Search tiles report the WB Wallet price
+  (`price_kind: wallet`, flagged in `meta.warnings`); cards report the regular,
+  Wallet and struck prices separately, plus the store and its rating, warehouse,
+  delivery date, return policy, cross-border flag with the seller's legal entity
+  and country, warranty, the «Оригинал» badge, and «Все N предложений от X ₽»
+  with a counterfeit-risk warning below 60 % of the card's price. «Подозрительная
+  активность» and a visible captcha stop without retries. New settings:
+  `WB_TRANSPORT`, `WB_DOM_WAIT_S`, `WB_DOM_MIN_GAP`, `WB_DOM_SETTLE_MS`,
+  `WB_DOM_STORE_WAIT_S`, `WB_DOM_OFFERS_WAIT_S`, `WB_DOM_MAX_CARDS`. New
+  `WbCardItem` fields are optional and empty on the API path.
+
 ### Fixed
 
 - Citilink search sends the query as `text`, the parameter citilink.ru reads.

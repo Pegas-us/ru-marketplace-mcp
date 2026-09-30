@@ -41,6 +41,35 @@ class WbCardItem(BaseModel):
     )
     price_rub: float | None = Field(default=None, description="Current price in rubles.")
     price_original_rub: float | None = Field(default=None, description="Strikethrough original price in rubles.")
+    # Fields below are filled only by WB_TRANSPORT=dom (rendered pages); the API path leaves them empty.
+    wallet_price_rub: float | None = Field(
+        default=None, description="Price when paying via WB Wallet (dom transport). Not a card price."
+    )
+    price_kind: str = Field(
+        default="",
+        description="What price_rub is: 'regular' (card price) or 'wallet' (search tiles show only the Wallet price).",
+    )
+    delivery: str | None = Field(default=None, description="Delivery date as WB shows it, e.g. '11 октября'.")
+    warehouse: str | None = Field(default=None, description="Warehouse note, e.g. 'склад продавца' (seller-fulfilled).")
+    returns: str | None = Field(default=None, description="Return policy line, e.g. 'Возврат через заявку'.")
+    cross_border: bool | None = Field(
+        default=None, description="True for a foreign seller or an AliExpress-on-WB listing; None when unknown."
+    )
+    seller_legal_name: str | None = Field(default=None, description="Registered seller entity from the product page.")
+    seller_country: str | None = Field(default=None, description="Seller country code from the address, e.g. 'CN'.")
+    seller_registration: str | None = Field(default=None, description="Seller registration number (OGRN or foreign).")
+    seller_inn: str | None = Field(default=None, description="Seller INN when a real one is shown.")
+    warranty: str | None = Field(default=None, description="Warranty as the card states it, e.g. '5 лет' (dom).")
+    original_badge: bool | None = Field(
+        default=None, description="True when WB shows its «Оригинал» badge on the card; None when absent/unknown."
+    )
+    other_offers_count: int | None = Field(
+        default=None, description="«Все N предложений»: how many other sellers offer this card (dom)."
+    )
+    other_offers_from_rub: float | None = Field(
+        default=None, description="Lowest price among other sellers of this card («от X ₽»), not verified."
+    )
+    transport: str = Field(default="api", description="How this item was read: 'api' or 'dom'.")
 
 
 class WbCardResponse(BaseModel):
