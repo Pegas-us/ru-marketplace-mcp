@@ -91,8 +91,8 @@ PROBE_JS = r"""
     tiles: document.querySelectorAll('[data-nm-id]').length,
     h1: !!document.querySelector('h1'),
     sku: /Артикул/.test(full.slice(0, 20000)),
-    // «Все 27 предложений от 7 369 ₽» renders after the store block, and only on cards with other sellers.
-    offers: /Все\s+\d+\s+предложени/i.test(full.slice(0, 30000)),
+    // «Все 27 предложений от 7 369 ₽» (one offer: «1 предложение от 4 735 ₽») renders after the store block, and only on cards with other sellers.
+    offers: /(?:Все\s+)?\d+\s+предложени\S*\s+от/i.test(full.slice(0, 30000)),
     // The store block («Находки из Китая 5,0») renders after prices and «Артикул».
     store: [...document.querySelectorAll('[class*="seller" i]')].some(e => {
       const t = (e.innerText || '').replace(/\s+/g, ' ').trim();
@@ -187,7 +187,7 @@ _RATING_INLINE_RE = re.compile(
 _RATING_INLINE_DEC_RE = re.compile(rf"^(\d[.,]\d){_SP}+(\d[\d \u00a0\u2009\u202f]*){_SP}+оцен", re.IGNORECASE)
 _SEPARATOR_LINE = frozenset({"·", "•"})
 _OFFERS_RE = re.compile(
-    rf"Все{_SP}+(\d+){_SP}+предложени\w*\s+от{_SP}+(\d{{1,3}}(?:{_SP}\d{{3}})+|\d+){_SP}*₽", re.IGNORECASE
+    rf"(?:Все{_SP}+)?(\d+){_SP}+предложени\w*\s+от{_SP}+(\d{{1,3}}(?:{_SP}\d{{3}})+|\d+){_SP}*₽", re.IGNORECASE
 )
 OTHER_OFFERS_ANOMALY = 0.6  # other sellers «от» below 60 % of this card's price → price anomaly
 _RATING_ONLY_RE = re.compile(r"^(\d(?:[.,]\d)?)$")
@@ -481,7 +481,7 @@ def _name_from_title(title: Any, nm: int) -> str:
     return "" if text.lower().startswith("интернет") else text
 
 
-_OFFERS_HEAD_RE = re.compile(rf"^Все{_SP}+\d+{_SP}+предложени", re.IGNORECASE)
+_OFFERS_HEAD_RE = re.compile(rf"^(?:Все{_SP}+)?\d+{_SP}+предложени\w*{_SP}+от{_SP}", re.IGNORECASE)
 _OFFER_RATING_RE = re.compile(r"^(нет оценок|\d[.,]?\d?)$", re.IGNORECASE)
 MAX_OTHER_OFFERS = 5
 

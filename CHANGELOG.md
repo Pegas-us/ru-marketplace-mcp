@@ -28,6 +28,13 @@
 
 ### Fixed
 
+- `WB_TRANSPORT=dom` reads the other-offers header for a single other seller.
+  With one offer WB writes «1 предложение от 4 735 ₽» (singular, no «Все»), which
+  the «Все N предложений» pattern missed: nm 1345073040 listed its one other offer
+  (nm 1552408950) in `other_offers` while `other_offers_count` and
+  `other_offers_from_rub` stayed empty and the block's text was not cut out of
+  the card's own lines. Both forms are recognised now, and the render wait for
+  the block accepts the singular header too.
 - `WB_TRANSPORT=dom` no longer glues another seller's offer onto a card whose
   own offer is unavailable. nm 164379765 (main seller Modern Device, no «Купить»
   button) came back with supplier UJII, 7 413 ₽ and `in_stock: false`: those

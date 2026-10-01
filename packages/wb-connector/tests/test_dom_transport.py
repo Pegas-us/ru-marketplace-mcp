@@ -786,3 +786,125 @@ def test_api_items_have_no_other_offers() -> None:
     from wb_connector.models_output import WbCardItem
 
     assert WbCardItem().other_offers == []
+
+
+# Live 2026-10-01 (wb_card_dump.py 1345073040, lines 0-54 verbatim): the card has its own offer and ONE other
+# seller, whose block header is «1 предложение от 4 735 ₽» — singular, no «Все». `offers` is what CARD_EXTRACT_JS
+# read from the block's tile in the same session (HTML: fixtures/card_one_other_offer_1345073040.html).
+ONE_OTHER_OFFER_PAYLOAD = {
+    "title": "Платы расширения UPD2018 DP + USB3.1 TX5M0 JPHZNB 1345073040 купить за 5 005 ₽ в интернет‑магазине Wildberries",
+    "h1": "",
+    "lines": [
+        "JPHZNB / Платы расширения JPHZNB UPD2018 DP + USB3.1 TX5M0",
+        "Нет оценок",
+        "4 904 ₽",
+        "5 005 ₽",
+        "9 231 ₽",
+        "Купить",
+        "В корзину",
+        "Главная",
+        "Электроника",
+        "Комплектующие для ПК",
+        "Материнские платы",
+        "JPHZNB",
+        "РАСПРОДАЖА",
+        "Похожие",
+        "JPHZNB",
+        "Платы расширения JPHZNB UPD2018 DP + USB3.1 TX5M0",
+        "Нет оценок",
+        "Артикул",
+        "1345073040",
+        "Свойство 1",
+        "Цвет: Full height version",
+        "ИНН",
+        "0000000000",
+        "Наименование продавца",
+        "Jiyuan Qiyun Network Technology Co., Ltd.",
+        "Адрес продавца",
+        "CN, Huling Science and Technology Building, West Section of Huanghe Avenue, Other Districts, Jiyuan City, Henan Province, 410881999",
+        "Номер регистрации",
+        "91419001MA40X2YF91",
+        "Длина упаковки",
+        "22 см",
+        "Характеристики и описание",
+        "Возврат через заявку",
+        "Материнские Платы",
+        "JPHZNB",
+        "В каталог бренда",
+        "Материнские Платы",
+        "Все товары категории",
+        "4 904 ₽",
+        "5 005 ₽",
+        "9 231 ₽",
+        "Розыгрыш",
+        "Купить сейчас",
+        "Добавить в корзину",
+        "12 октября,",
+        "склад продавца",
+        "Находки из Китая",
+        "5,0",
+        "1 предложение от 4 735 ₽",
+        "Все",
+        "4 735 ₽",
+        "Нет оценок",
+        "12 октября",
+        "Находки из Китая",
+        "Оценки0",
+    ],
+    "wallet": ["4 904 ₽", "5 005 ₽ 9 231 ₽", "5 005 ₽", "9 231 ₽", "4 904 ₽ 5 005 ₽ 9 231 ₽", "4 904 ₽"],
+    "del": ["6 341 ₽", "7 180 ₽", "10 663 ₽", "2 964 ₽", "838 ₽", "1 441 ₽", "5 305 ₽", "1 602 ₽"],
+    "seller": ["Находки из Китая 5,0"] * 7 + ["Находки из Китая"],
+    "offers": [{"nm": "1552408950", "lines": ["4 735 ₽", "Нет оценок", "12 октября", "Находки из Китая"]}],
+}
+
+
+def test_single_other_offer_header_gives_count_and_floor() -> None:
+    """Was: other_offers listed 1552408950, but count and floor were None — «1 предложение от …» matched nothing."""
+    item, warnings = D.parse_card_page(ONE_OTHER_OFFER_PAYLOAD, 1345073040)
+    assert item is not None
+    assert (item["other_offers_count"], item["other_offers_from_rub"]) == (1, 4735.0)
+    assert item["other_offers"] == [
+        {
+            "nm_id": 1552408950,
+            "supplier": "Находки из Китая",
+            "price_rub": 4735.0,
+            "price_kind": "",
+            "delivery": "12 октября",
+        }
+    ]
+    assert (item["price_rub"], item["wallet_price_rub"], item["price_original_rub"]) == (5005.0, 4904.0, 9231.0)
+    assert (item["supplier"], item["supplier_rating"]) == ("Находки из Китая", 5.0)
+    assert item["in_stock"] is True and warnings == []
+
+
+def test_single_other_offer_block_is_cut_out_of_the_card_lines() -> None:
+    lines = ONE_OTHER_OFFER_PAYLOAD["lines"]
+    cut = D._without_offers_block(lines, ONE_OTHER_OFFER_PAYLOAD["offers"])
+    assert not any("предложение" in line for line in cut)
+    assert "4 735 ₽" not in cut and cut[-1] == "Оценки0"
+
+
+@pytest.mark.parametrize(
+    ("line", "count", "floor"),
+    [
+        ("1 предложение от 4 735 ₽", 1, 4735.0),
+        ("Все 26 предложений от 7 413 ₽", 26, 7413.0),
+        ("Все 2 предложения от 999 ₽", 2, 999.0),
+        ("5 предложений от 1 200 000 ₽", 5, 1200000.0),
+    ],
+)
+def test_other_offers_header_forms(line: str, count: int, floor: float) -> None:
+    match = D._OFFERS_RE.search(line)
+    assert match is not None and (int(match.group(1)), float(re.sub(r"\D", "", match.group(2)))) == (count, floor)
+    assert D._OFFERS_HEAD_RE.match(line)
+
+
+def test_other_offers_html_fragment_single_tile_matches() -> None:
+    html = (Path(__file__).parent / "fixtures" / "card_one_other_offer_1345073040.html").read_text(encoding="utf-8")
+    assert "1&nbsp;предложение" in html or "1 предложение" in html
+    assert re.findall(r'href="https://www\.wildberries\.ru/catalog/(\d+)/detail\.aspx"', html) == ["1552408950"]
+    assert "/catalog/1345073040/other-sellers" in html
+
+
+def test_card_probe_waits_for_the_singular_header() -> None:
+    assert r"предложени\S*\s+от" in D.PROBE_JS
