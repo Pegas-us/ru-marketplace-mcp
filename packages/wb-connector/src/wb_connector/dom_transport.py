@@ -132,6 +132,31 @@ CARD_EXTRACT_JS = r"""
   const lines = ((root && root.innerText) || '').split('\n').map(clean).filter(Boolean).slice(0, 400).map(s => s.slice(0, 300));
   const pick = (sel, n) => [...document.querySelectorAll(sel)].map(e => clean(e.innerText)).filter(Boolean).slice(0, n).map(s => s.slice(0, 200));
   const h1 = document.querySelector('h1');
+  // «Все N предложений»: other sellers' tiles. The block is found by its link to
+  // /catalog/<nm>/other-sellers; each tile is the widest ancestor of one
+  // /catalog/<nm>/detail.aspx link that holds no second tile's link. Their text
+  // and nm ids go out as `offers`, so Python can keep them apart from the card.
+  const offers = [];
+  const more = document.querySelector('a[href*="/other-sellers"]');
+  let block = more;
+  const detail = 'a[href*="/detail.aspx"]';
+  while (block && !block.querySelector(detail) && block.parentElement) block = block.parentElement;
+  if (block && block.querySelector(detail)) {
+    const hrefs = a => a.getAttribute('href') || '';
+    const nmOf = a => { const m = /\/catalog\/(\d+)\/detail\.aspx/.exec(hrefs(a)); return m ? m[1] : ''; };
+    const seen = new Set();
+    for (const a of block.querySelectorAll(detail)) {
+      const nm = nmOf(a);
+      if (!nm || seen.has(nm)) continue;
+      seen.add(nm);
+      let tile = a;
+      while (tile.parentElement && tile.parentElement !== block &&
+             new Set([...tile.parentElement.querySelectorAll(detail)].map(nmOf)).size === 1) tile = tile.parentElement;
+      const tl = (tile.innerText || '').split('\n').map(clean).filter(Boolean).slice(0, 12).map(s => s.slice(0, 200));
+      offers.push({nm: nm, lines: tl});
+      if (offers.length >= 12) break;
+    }
+  }
   return JSON.stringify({
     title: document.title || '',
     url: location.href,
@@ -139,7 +164,8 @@ CARD_EXTRACT_JS = r"""
     lines: lines,
     wallet: pick('[class*="wallet" i]', 8).filter(t => t.indexOf('₽') >= 0),
     del: pick('del, s', 8).filter(t => t.indexOf('₽') >= 0),
-    seller: pick('[class*="seller" i]', 10).filter(t => !/стать продавцом/i.test(t))
+    seller: pick('[class*="seller" i]', 10).filter(t => !/стать продавцом/i.test(t)),
+    offers: offers
   });
 }
 """
@@ -455,6 +481,70 @@ def _name_from_title(title: Any, nm: int) -> str:
     return "" if text.lower().startswith("интернет") else text
 
 
+_OFFERS_HEAD_RE = re.compile(rf"^Все{_SP}+\d+{_SP}+предложени", re.IGNORECASE)
+_OFFER_RATING_RE = re.compile(r"^(нет оценок|\d[.,]?\d?)$", re.IGNORECASE)
+MAX_OTHER_OFFERS = 5
+
+
+def _parse_other_offers(raw: Any, requested_nm: int) -> list[dict[str, Any]]:
+    """The «Все N предложений» tiles → up to five cheapest, as ``WbOtherOffer``-shaped dicts.
+
+    A tile reads «7 413 ₽ / Нет оценок / 11 октября / UJII»: price, rating, delivery, store.
+    The page does not say whether that price is the regular or the Wallet one (the tile has
+    no Wallet label), so ``price_kind`` stays empty unless the tile itself names the Wallet.
+    """
+    offers: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        nm_text = re.sub(r"\D", "", str(entry.get("nm") or ""))
+        lines = _str_lines(entry.get("lines"))
+        if not nm_text or int(nm_text) == requested_nm or int(nm_text) in seen:
+            continue
+        prices = [p for line in lines if "мес" not in line.lower() for p in prices_in(line)]
+        if not prices:
+            continue
+        seen.add(int(nm_text))
+        delivery = next((m.group(1) for m in (_DELIVERY_RE.match(line) for line in lines) if m), None)
+        supplier = next(
+            (
+                line
+                for line in reversed(lines)
+                if "₽" not in line and not _OFFER_RATING_RE.match(line) and not _DELIVERY_RE.match(line)
+            ),
+            "",
+        )
+        wallet = any("кошельк" in line.lower() for line in lines)
+        offers.append(
+            {
+                "nm_id": int(nm_text),
+                "supplier": supplier,
+                "price_rub": prices[0],
+                "price_kind": "wallet" if wallet else "",
+                "delivery": delivery,
+            }
+        )
+    offers.sort(key=lambda offer: offer["price_rub"])
+    return offers[:MAX_OTHER_OFFERS]
+
+
+def _without_offers_block(lines: list[str], raw_offers: Any) -> list[str]:
+    """``lines`` minus the «Все N предложений» block, so no other seller's text reads as this card's."""
+    start = next((i for i, line in enumerate(lines) if _OFFERS_HEAD_RE.match(line)), None)
+    if start is None:
+        return lines
+    end = start + 1
+    if end < len(lines) and lines[end].strip().lower() == "все":  # the «Все ›» button
+        end += 1
+    for entry in raw_offers if isinstance(raw_offers, list) else []:
+        for text in _str_lines(entry.get("lines")) if isinstance(entry, dict) else []:
+            hit = next((j for j in range(end, min(len(lines), end + 12)) if lines[j] == text), None)
+            if hit is not None:
+                end = hit + 1
+    return lines[:start] + lines[end:]
+
+
 def parse_card_page(payload: dict[str, Any], requested_nm: int) -> tuple[dict[str, Any] | None, list[str]]:
     """Product page → ``WbCardItem``-shaped dict (or None) plus warnings."""
     warnings: list[str] = []
@@ -474,40 +564,34 @@ def parse_card_page(payload: dict[str, Any], requested_nm: int) -> tuple[dict[st
     if shown_nm and shown_nm != str(requested_nm):
         return None, [f"wb_dom_card: requested nm {requested_nm}, page shows {shown_nm} — skipped"]
 
+    raw_offers = payload.get("offers")
+    all_lines, lines = lines, _without_offers_block(lines, raw_offers)
+    other_offers = _parse_other_offers(raw_offers, requested_nm)
+
+    # The buy block (the «Купить» / «В корзину» buttons) is the only place this card's own
+    # offer — price, store, delivery — is read from. Without it the main offer is unavailable
+    # (live 2026-10-01, nm 164379765): the prices and the store that remain on the page belong
+    # to the other sellers, and must not be taken for this card's.
     buy_index = next((i for i, line in enumerate(lines) if line.lower() in _BUY_LINES), None)
+    available = buy_index is not None
+    regular = wallet = crossed = None
+    delivery = warehouse = None
+    store, store_rating = "", None
     if buy_index is not None:
         window = lines[max(0, buy_index - 8) : buy_index]
         prices = [p for line in window if "мес" not in line.lower() for p in prices_in(line)]
-    else:
-        prices = []
-        for line in lines:
-            found = prices_in(line) if "мес" not in line.lower() else []
-            if found:
-                prices.extend(found)
-            elif prices:
-                break
-    regular, wallet, crossed = assign_prices(
-        prices,
-        wallet_hint=_first_price(payload.get("wallet"), prices),
-        crossed_hint=_first_price(payload.get("del"), prices),
-    )
-    if regular is None and wallet is not None:
-        warnings.append(f"wb_dom_card: nm {requested_nm} shows only a Wallet price; regular price unknown")
-
-    in_stock: bool | None
-    if buy_index is not None:
-        in_stock = True
-    elif any(_OUT_OF_STOCK_RE.search(line) for line in lines[:120]):
-        in_stock = False
-    else:
-        in_stock = None
-
-    tail = lines[buy_index:] if buy_index is not None else lines
-    delivery, warehouse, delivery_index = parse_delivery(tail)
-
-    store, store_rating = _store_from_buy_block(tail, delivery_index)
-    if not store:
-        store, store_rating = _store_from_seller_texts(_str_lines(payload.get("seller")))
+        regular, wallet, crossed = assign_prices(
+            prices,
+            wallet_hint=_first_price(payload.get("wallet"), prices),
+            crossed_hint=_first_price(payload.get("del"), prices),
+        )
+        if regular is None and wallet is not None:
+            warnings.append(f"wb_dom_card: nm {requested_nm} shows only a Wallet price; regular price unknown")
+        tail = lines[buy_index:]
+        delivery, warehouse, delivery_index = parse_delivery(tail)
+        store, store_rating = _store_from_buy_block(tail, delivery_index)
+        if not store:
+            store, store_rating = _store_from_seller_texts(_str_lines(payload.get("seller")))
 
     returns = next((line for line in lines if line.lower().startswith("возврат")), None)
     address = labels.get("Адрес продавца", "")
@@ -523,7 +607,7 @@ def parse_card_page(payload: dict[str, Any], requested_nm: int) -> tuple[dict[st
     if rating is None and feedbacks is None:
         rating, feedbacks = parse_rating(lines[:200])
     original_badge = True if any(line.strip() == "Оригинал" for line in head) else None
-    offers_match = _OFFERS_RE.search("\n".join(lines[:200]))
+    offers_match = _OFFERS_RE.search("\n".join(all_lines[:200]))
     offers_count = int(offers_match.group(1)) if offers_match else None
     offers_from = float(re.sub(r"\D", "", offers_match.group(2))) if offers_match else None
     price = regular if regular is not None else wallet
@@ -537,7 +621,7 @@ def parse_card_page(payload: dict[str, Any], requested_nm: int) -> tuple[dict[st
         "review_rating": rating,
         "feedbacks": feedbacks,
         "total_quantity": None,
-        "in_stock": bool(in_stock and price is not None),
+        "in_stock": bool(available and price is not None),
         "price_rub": price,
         "price_original_rub": crossed,
         "wallet_price_rub": wallet,
@@ -554,9 +638,22 @@ def parse_card_page(payload: dict[str, Any], requested_nm: int) -> tuple[dict[st
         "original_badge": original_badge,
         "other_offers_count": offers_count,
         "other_offers_from_rub": offers_from,
+        "other_offers": other_offers,
         "transport": "dom",
     }
-    if price and offers_from and offers_from < price * OTHER_OFFERS_ANOMALY:
+    if not available:
+        parts = [f"wb_dom_card: nm {requested_nm} main offer unavailable"]
+        if offers_count is not None or other_offers:
+            count = offers_count if offers_count is not None else len(other_offers)
+            tail_text = f"{count} other sellers"
+            if offers_from:
+                tail_text += f" from {offers_from:.0f} ₽"
+            cheapest = other_offers[0] if other_offers else None
+            if cheapest and (not offers_from or cheapest["price_rub"] == offers_from):
+                tail_text += f" (cheapest nm {cheapest['nm_id']})"
+            parts.append(tail_text)
+        warnings.append("; ".join(parts))
+    elif price and offers_from and offers_from < price * OTHER_OFFERS_ANOMALY:
         warnings.append(
             f"wb_dom_card: nm {requested_nm}: other sellers from {offers_from:.0f} ₽ vs {price:.0f} ₽ here "
             f"({offers_from / price - 1:+.0%}) — anomalously cheap offers of the same card, treat as counterfeit risk"

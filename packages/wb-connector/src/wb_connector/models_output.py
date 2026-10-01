@@ -19,6 +19,17 @@ class MetaOut(MetaOutBase):
     """WB carries the shared envelope unchanged."""
 
 
+class WbOtherOffer(BaseModel):
+    nm_id: int = Field(description="nm_id of the other seller's listing (its own card, not this one).")
+    supplier: str = Field(default="", description="Seller of that listing.")
+    price_rub: float | None = Field(default=None, description="Price WB shows on that listing's tile, in rubles.")
+    price_kind: str = Field(
+        default="",
+        description="'wallet' only when the tile names the WB Wallet; empty when the page does not say which price it is.",
+    )
+    delivery: str | None = Field(default=None, description="Delivery date shown on the tile, e.g. '11 октября'.")
+
+
 class WbCardItem(BaseModel):
     nm_id: int | None = Field(default=None, description="WB product nmId.")
     name: str = Field(default="", description="Product name (mojibake-decoded).")
@@ -68,6 +79,11 @@ class WbCardItem(BaseModel):
     )
     other_offers_from_rub: float | None = Field(
         default=None, description="Lowest price among other sellers of this card («от X ₽»), not verified."
+    )
+    other_offers: list[WbOtherOffer] = Field(
+        default_factory=list,
+        description="Up to 5 cheapest listings of other sellers from the «Все N предложений» block (dom). "
+        "Separate cards with their own nm_id: never this card's price or seller. Empty on the API path.",
     )
     transport: str = Field(default="api", description="How this item was read: 'api' or 'dom'.")
 

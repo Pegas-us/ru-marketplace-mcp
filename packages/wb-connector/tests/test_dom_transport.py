@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -599,3 +601,188 @@ def test_reviews_score_h1_is_not_the_product_name() -> None:
     lines = [line for line in SAMSUNG_CARD_PAYLOAD["lines"] if " / " not in line]
     item, _ = D.parse_card_page({**SAMSUNG_CARD_PAYLOAD, "lines": lines, "h1": "Название товара"}, 164379765)
     assert item is not None and item["name"] == "Название товара"
+
+
+# Live 2026-10-01 (wb_card_dump.py, lines 0-61 verbatim): the same nm 164379765 as above,
+# but its main offer (Modern Device) is unavailable — «Нет в наличии», no «Купить» / «В корзину». The page still
+# shows «Все 26 предложений от 7 413 ₽»: those prices and sellers belong to OTHER cards (nm 1605653581 …).
+# `offers` is what CARD_EXTRACT_JS collected from the block's /catalog/<nm>/detail.aspx tiles in the same session.
+UNAVAILABLE_CARD_PAYLOAD = {
+    "title": 'SSD накопитель 2.5" 870 EVO MZ-77E500BW 500GB Samsung 164379765 купить в интернет‑магазине Wildberries',
+    "h1": "",
+    "lines": [
+        'Samsung / SSD накопитель 2.5" 870 EVO MZ-77E500BW 500GB',
+        "5",
+        "·",
+        "222 оценки",
+        '2,5" · 500 ГБ',
+        "Нет в наличии",
+        "В избранное",
+        "Главная",
+        "Электроника",
+        "Комплектующие для ПК",
+        "Твердотельные накопители SSD",
+        "Samsung",
+        "Похожие",
+        "Samsung",
+        "Оригинал",
+        'SSD накопитель 2.5" 870 EVO MZ-77E500BW 500GB',
+        "5 · 222 оценки",
+        "42 вопроса",
+        '2,5" · 500 ГБ',
+        "Артикул",
+        "164379765",
+        "Гарантийный срок",
+        "5 лет",
+        "Форм-фактор накопителя",
+        '2,5"',
+        "Объем накопителя",
+        "500 ГБ",
+        "Интерфейс",
+        "SATA",
+        "Тип памяти накопителя",
+        "3D NAND TLC (Samsung)",
+        "Максимальная скорость записи",
+        "530 Мб/с",
+        "Характеристики и описание",
+        "Внутренние Ssd-Накопители",
+        "SAMSUNG",
+        "В каталог бренда",
+        "Внутренние Ssd-Накопители",
+        "Все товары категории",
+        "Нет в наличии",
+        "В избранное",
+        "Modern Device",
+        "4,9",
+        "Все 26 предложений от 7 413 ₽",
+        "Все",
+        "7 413 ₽",
+        "Нет оценок",
+        "11 октября",
+        "UJII",
+        "7 669 ₽",
+        "Нет оценок",
+        "11 октября",
+        "FGGG",
+        "12 037 ₽",
+        "Нет оценок",
+        "11 октября",
+        "IT Склад",
+        "Оценки222",
+        "Вопросы42",
+        "5,0",
+        "Выбор покупателей",
+        "222 оценки",
+    ],
+    "wallet": [],
+    "del": [],
+    "seller": ["Modern Device 4,9"] * 7 + ["Modern Device"],
+    "offers": [
+        {"nm": "1605653581", "lines": ["7 413 ₽", "Нет оценок", "11 октября", "UJII"]},
+        {"nm": "1605660096", "lines": ["7 669 ₽", "Нет оценок", "11 октября", "FGGG"]},
+        {"nm": "1060828177", "lines": ["12 037 ₽", "Нет оценок", "11 октября", "IT Склад"]},
+    ],
+}
+
+OTHER_SELLER_FIELDS = (
+    "price_rub",
+    "wallet_price_rub",
+    "price_original_rub",
+    "supplier",
+    "supplier_rating",
+    "delivery",
+    "warehouse",
+)
+
+
+def test_unavailable_main_offer_does_not_take_another_sellers_fields() -> None:
+    """Was: supplier «UJII», price 7413, delivery «11 октября» — nm 1605653581's offer glued onto nm 164379765."""
+    item, warnings = D.parse_card_page(UNAVAILABLE_CARD_PAYLOAD, 164379765)
+    assert item is not None
+    assert item["in_stock"] is False
+    assert (item["price_rub"], item["wallet_price_rub"], item["price_original_rub"]) == (None, None, None)
+    assert (item["supplier"], item["supplier_rating"]) == ("", None)
+    assert (item["delivery"], item["warehouse"], item["returns"]) == (None, None, None)
+    assert item["price_kind"] == ""
+    # what belongs to the card itself stays
+    assert (item["review_rating"], item["feedbacks"]) == (5.0, 222)
+    assert item["warranty"] == "5 лет" and item["original_badge"] is True
+    assert (item["other_offers_count"], item["other_offers_from_rub"]) == (26, 7413.0)
+    assert warnings == [
+        "wb_dom_card: nm 164379765 main offer unavailable; 26 other sellers from 7413 ₽ (cheapest nm 1605653581)"
+    ]
+
+
+def test_unavailable_main_offer_lists_the_other_sellers() -> None:
+    item, _ = D.parse_card_page(UNAVAILABLE_CARD_PAYLOAD, 164379765)
+    assert item is not None
+    assert item["other_offers"] == [
+        {"nm_id": 1605653581, "supplier": "UJII", "price_rub": 7413.0, "price_kind": "", "delivery": "11 октября"},
+        {"nm_id": 1605660096, "supplier": "FGGG", "price_rub": 7669.0, "price_kind": "", "delivery": "11 октября"},
+        {"nm_id": 1060828177, "supplier": "IT Склад", "price_rub": 12037.0, "price_kind": "", "delivery": "11 октября"},
+    ]
+
+
+def test_unavailable_main_offer_without_offer_tiles_still_blanks_the_card() -> None:
+    """An older payload (text only, no `offers`): the block's text must not leak either."""
+    payload = {k: v for k, v in UNAVAILABLE_CARD_PAYLOAD.items() if k != "offers"}
+    item, warnings = D.parse_card_page(payload, 164379765)
+    assert item is not None
+    assert item["in_stock"] is False and item["price_rub"] is None and item["supplier"] == ""
+    assert item["other_offers"] == []
+    assert "main offer unavailable; 26 other sellers from 7413 ₽" in warnings[0]
+    assert "cheapest nm" not in warnings[0]
+
+
+def test_other_offers_are_the_five_cheapest_and_never_this_card() -> None:
+    tiles = [{"nm": str(1000 + i), "lines": [f"{9000 - i * 100} ₽", "Нет оценок", "завтра", f"S{i}"]} for i in range(8)]
+    tiles.append({"nm": "164379765", "lines": ["100 ₽", "5,0", "завтра", "Self"]})
+    tiles.append({"nm": "1000", "lines": ["50 ₽", "завтра", "Dup"]})  # the same nm twice: first tile wins
+    item, _ = D.parse_card_page({**UNAVAILABLE_CARD_PAYLOAD, "offers": tiles}, 164379765)
+    assert item is not None
+    assert [o["nm_id"] for o in item["other_offers"]] == [1007, 1006, 1005, 1004, 1003]
+    assert item["other_offers"][0]["supplier"] == "S7"
+
+
+def test_available_main_offer_ignores_other_sellers_block() -> None:
+    """With a buy block the price and store come from it only; the 30.09 expectations stay, offers are added."""
+    payload = {
+        **SAMSUNG_CARD_PAYLOAD,
+        "seller": ["UJII"],  # a page-wide «seller» element belonging to the offers block must not win
+        "offers": UNAVAILABLE_CARD_PAYLOAD["offers"],
+    }
+    item, warnings = D.parse_card_page(payload, 164379765)
+    assert item is not None
+    assert (item["price_rub"], item["supplier"], item["supplier_rating"]) == (20825.0, "Modern Device", 4.9)
+    assert (item["delivery"], item["warehouse"]) == ("4 октября", "склад продавца")
+    assert item["in_stock"] is True
+    assert [o["supplier"] for o in item["other_offers"]] == ["UJII", "FGGG", "IT Склад"]
+    assert any("anomalously cheap" in w for w in warnings)
+    assert not any("main offer unavailable" in w for w in warnings)
+
+
+def test_unavailable_card_does_not_compare_prices() -> None:
+    _, warnings = D.parse_card_page(UNAVAILABLE_CARD_PAYLOAD, 164379765)
+    assert not any("anomalously" in w for w in warnings)
+
+
+def test_other_offers_html_fragment_matches_the_tiles() -> None:
+    """The captured block (provenance: card_other_offers_164379765.provenance.json) carries what the JS reads."""
+    html = (Path(__file__).parent / "fixtures" / "card_other_offers_164379765.html").read_text(encoding="utf-8")
+    hrefs = re.findall(r'href="https://www\.wildberries\.ru/catalog/(\d+)/detail\.aspx"', html)
+    assert hrefs == [offer["nm"] for offer in UNAVAILABLE_CARD_PAYLOAD["offers"]]
+    assert "/catalog/164379765/other-sellers" in html
+    tiles = re.split(r"<li[^>]*>", html)[1:]
+    for tile, offer in zip(tiles, UNAVAILABLE_CARD_PAYLOAD["offers"], strict=True):
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", tile).replace("&nbsp;", " ")).strip()
+        assert text == " ".join(offer["lines"])
+
+
+def test_card_extractor_collects_offer_tiles() -> None:
+    assert "other-sellers" in D.CARD_EXTRACT_JS and "offers: offers" in D.CARD_EXTRACT_JS
+
+
+def test_api_items_have_no_other_offers() -> None:
+    from wb_connector.models_output import WbCardItem
+
+    assert WbCardItem().other_offers == []

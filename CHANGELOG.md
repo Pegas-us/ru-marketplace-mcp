@@ -28,6 +28,18 @@
 
 ### Fixed
 
+- `WB_TRANSPORT=dom` no longer glues another seller's offer onto a card whose
+  own offer is unavailable. nm 164379765 (main seller Modern Device, no «Купить»
+  button) came back with supplier UJII, 7 413 ₽ and `in_stock: false`: those
+  belong to nm 1605653581, listed in the page's «Все N предложений» block, which
+  the price and store fallbacks mistook for the buy block. Without a buy block
+  the card now reports `in_stock: false` and empty price, Wallet and struck
+  prices, supplier, supplier rating, delivery and warehouse, plus a warning
+  `main offer unavailable; N other sellers from X ₽ (cheapest nm Y)`. The other
+  sellers are kept in the new optional `other_offers` (up to five cheapest: `nm_id`
+  from the tile's link, `supplier`, `price_rub`, `price_kind`, `delivery`; empty on
+  the API path), and the 60 % counterfeit-risk comparison runs only when the card
+  has its own offer.
 - Citilink search sends the query as `text`, the parameter citilink.ru reads.
   With `?q=` the site renders its generic search landing, so every search parsed
   zero tiles and was reported as drift while the site itself answered normally;
