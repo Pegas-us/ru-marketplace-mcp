@@ -11,6 +11,10 @@
 
 ### Added
 
+- `cian_card` returns `photo_urls`: the full-size image URLs in Cian's order,
+  with floor plans flagged `is_layout`. The count in `photos` stays; the URLs
+  let a client download and inspect the photos, which the CDN serves without
+  the browser session.
 - Wildberries can read rendered pages instead of the API: `WB_TRANSPORT=dom`
   (default `api`) makes `wb_search` and `wb_card` open the search grid and the
   product page in the operator's Chrome over CDP and parse their text, for
@@ -28,6 +32,12 @@
 
 ### Fixed
 
+- Wildberries search reports a refusal of `search.wb.ru` v9 or of the legacy path
+  as `transport_down` instead of falling back to stale unpriced results or an
+  empty answer (#101).
+- Review health no longer reports content key drift for a small sample of
+  rating-only reviews: the all-empty-text alarm needs at least 10 returned
+  reviews (#111).
 - `WB_TRANSPORT=dom` reads the other-offers header for a single other seller.
   With one offer WB writes «1 предложение от 4 735 ₽» (singular, no «Все»), which
   the «Все N предложений» pattern missed: nm 1345073040 listed its one other offer
@@ -87,6 +97,12 @@
   search endpoint while the shared client answered it, and from the next
   `card.wb.ru` refused both. Canary probes read past the cache, so a `healthy`
   verdict cannot describe a read that already happened.
+- Cian works from a Chrome profile that remembers a region. `www.cian.ru`
+  redirects such a profile to a regional subdomain (`rostov.cian.ru`), which the
+  exact-host navigation policy rejected, so every `cian_search` and `cian_card`
+  failed with `transport_down`. A policy entry with a leading dot (`.cian.ru`)
+  now admits subdomains of that host, and only the Cian connector uses one;
+  `cian.ru` itself and look-alike hosts stay outside it.
 
 ## [2.4.2] - 2026-09-19
 
