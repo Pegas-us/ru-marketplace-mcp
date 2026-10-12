@@ -775,7 +775,7 @@ async def render(url: str, extract_js: str, want: str) -> dict[str, Any]:
         await _gap()
         try:
             async with open_page(url, wait_ms=_settings.dom_settle_ms, allowed_hosts=ALLOWED_HOSTS) as page:
-                await _wait_ready(page, want, url)
+                probe = await _wait_ready(page, want, url)
                 raw = await asyncio.wait_for(page.evaluate(extract_js), timeout=30.0)
         except NavBlocked as exc:
             log_event("wb_dom.nav_blocked", status=exc.status)
@@ -800,6 +800,9 @@ async def render(url: str, extract_js: str, want: str) -> dict[str, Any]:
         )
     if not isinstance(data, dict):
         raise_tool_error(ParserDriftError("WB page extractor returned a non-object payload", provider="wb"))
+    # Only the page's own «ничего не нашлось» makes an empty grid a real empty search;
+    # without it an empty grid is selector drift (see _wb_search_dom).
+    data["page_says_empty"] = bool(probe.get("empty"))
     if _usable(data, want):
         _dom_cache.set(url, data)
     return data

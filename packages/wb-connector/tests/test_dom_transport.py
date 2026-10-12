@@ -521,7 +521,39 @@ def test_render_challenge_that_never_clears(monkeypatch: pytest.MonkeyPatch) -> 
     assert "did not clear" in json.loads(str(exc.value))["message"]
 
 
+def test_render_reports_the_page_empty_notice(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _FakePage([{"state": "ok", "tiles": 0, "empty": True}], {"tiles": []})
+    _patch_open_page(monkeypatch, page)
+    data = _run(D.render(D.search_url("zzzqqq"), D.SEARCH_EXTRACT_JS, "search"))
+    assert data["page_says_empty"] is True
+
+
 # --------------------------------------------------------------- tool wiring
+
+
+@pytest.mark.parametrize(
+    ("page", "says_empty", "expected"),
+    [
+        (1, False, "parser_drift"),  # no tiles and no notice: the selectors drifted
+        (1, True, "no_results"),  # WB itself said nothing was found
+        (2, False, "no_results"),  # past the last page
+    ],
+)
+def test_dom_search_empty_grid_is_drift_unless_the_page_says_empty(
+    monkeypatch: pytest.MonkeyPatch, page: int, says_empty: bool, expected: str
+) -> None:
+    monkeypatch.setattr(server._settings, "transport", "dom")
+
+    async def fake_render(url: str, js: str, want: str) -> dict[str, Any]:
+        return {"tiles": [], "page_says_empty": says_empty}
+
+    monkeypatch.setattr(D, "render", fake_render)
+    if expected == "parser_drift":
+        with pytest.raises(ToolError) as exc:
+            _run(server.wb_search(query="UPD2018", page=page))
+        assert json.loads(str(exc.value))["error"] == "parser_drift"
+    else:
+        assert _run(server.wb_search(query="UPD2018", page=page)).status == "no_results"
 
 
 def test_tools_route_to_dom_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:

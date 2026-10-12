@@ -751,6 +751,16 @@ async def _wb_search_dom(
         await ctx.debug(f"wb_search[dom]: {url}")
     payload = await dom_transport.render(url, dom_transport.SEARCH_EXTRACT_JS, "search")
     items, warnings = dom_transport.parse_search_page(payload)
+    if not items and page == 1 and not payload.get("page_says_empty"):
+        # An empty first page without WB's own «ничего не нашлось» means the tile
+        # selectors stopped matching; reporting no_results would hide the drift.
+        log_event("wb_search.dom_drift", query=query[:100], tiles=len(payload.get("tiles") or []))
+        raise_tool_error(
+            ParserDriftError(
+                "wb_search[dom]: the search page rendered no product tiles and no empty-result notice",
+                provider="wb",
+            )
+        )
     if not items:
         log_event("wb_search.no_results", transport="dom", query=query[:100], page=page)
         return WbNoResultsResponse(query=query, page=page, total_ids=0)

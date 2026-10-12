@@ -28,7 +28,9 @@
   активность» and a visible captcha stop without retries. New settings:
   `WB_TRANSPORT`, `WB_DOM_WAIT_S`, `WB_DOM_MIN_GAP`, `WB_DOM_SETTLE_MS`,
   `WB_DOM_STORE_WAIT_S`, `WB_DOM_OFFERS_WAIT_S`, `WB_DOM_MAX_CARDS`. New
-  `WbCardItem` fields are optional and empty on the API path.
+  `WbCardItem` fields are optional and empty on the API path. An empty first search
+  page without WB's own «ничего не нашлось» notice is reported as `parser_drift`,
+  not as no results.
 
 ### Fixed
 
