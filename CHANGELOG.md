@@ -11,6 +11,9 @@
 
 ### Fixed
 
+- Review health no longer reports content key drift for a small sample of
+  rating-only reviews: the all-empty-text alarm needs at least 10 returned
+  reviews (#111).
 - Citilink search sends the query as `text`, the parameter citilink.ru reads.
   With `?q=` the site renders its generic search landing, so every search parsed
   zero tiles and was reported as drift while the site itself answered normally;
