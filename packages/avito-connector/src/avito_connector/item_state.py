@@ -38,6 +38,8 @@ Search hits carry ``isReserved`` on the js/items entry itself (live 2026-11-05:
 # classify: availability + evidence from hydration flags and the safe-deal banner; contradictions or silence -> unknown.
 # card_availability: classify() over one item page.
 # search_availability: active/reserved/unknown from a js/items entry's own isReserved.
+# photo_urls: Listing photo URLs (640x480 first) from the page's own gallery state, videos skipped.
+# photo_url_allowed: https on *.img.avito.st only, no credentials or odd ports.
 # END_MODULE_MAP
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ import json
 import re
 from html.parser import HTMLParser
 from typing import Any, Final, Literal
+from urllib.parse import urlsplit
 
 Availability = Literal["active", "reserved", "unknown"]
 ACTIVE: Final = "active"
@@ -201,3 +204,53 @@ def search_availability(item: dict[str, Any]) -> Availability:
     if value is False:
         return ACTIVE
     return UNKNOWN
+
+
+# --------------------------------------------------------------------------
+# Listing photos (avito_card photos=N, opt-in).
+# --------------------------------------------------------------------------
+
+_PHOTO_SIZES = ("640x480", "1280x960")
+_PHOTO_HOST = re.compile(r"(?:[a-z0-9-]+\.)?img\.avito\.st")
+
+
+def photo_urls(html: str, item_id: int | None, limit: int = 20) -> list[str]:
+    """Photo URLs of the requested listing from its own gallery state; videos are skipped.
+
+    Read from ``buyerItem.galleryInfo.media[].urls`` (640x480, else 1280x960),
+    the shape of every captured item page (2026-11-06); an entry marked
+    ``isVideo`` or a URL off ``*.img.avito.st`` is skipped.
+    """
+    bi = buyer_item(load_hydration(html), item_id)
+    gallery = bi.get("galleryInfo") if isinstance(bi, dict) else None
+    media = gallery.get("media") if isinstance(gallery, dict) else None
+    urls: list[str] = []
+    for entry in media if isinstance(media, list) else []:
+        if not isinstance(entry, dict) or entry.get("isVideo") is not False:
+            continue
+        sizes = entry.get("urls")
+        if not isinstance(sizes, dict):
+            continue
+        pick = next((sizes[size] for size in _PHOTO_SIZES if isinstance(sizes.get(size), str)), None)
+        if pick and photo_url_allowed(pick) and pick not in urls:
+            urls.append(pick)
+            if len(urls) >= limit:
+                break
+    return urls
+
+
+def photo_url_allowed(url: str) -> bool:
+    """https on ``*.img.avito.st`` only, without credentials or a port other than 443."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    host = parts.hostname or ""
+    return (
+        parts.scheme == "https"
+        and bool(_PHOTO_HOST.fullmatch(host))
+        and parts.username is None
+        and parts.password is None
+        and port in (None, 443)
+    )

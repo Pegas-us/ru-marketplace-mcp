@@ -22,10 +22,13 @@ Chrome over CDP — same pattern as Ozon.
   — never 0. Each hit has `availability` (active/reserved/unknown); reserved
   hits are kept unless `include_inactive=false` (then `excluded_inactive` says
   how many and `_meta` carries an `info:` line).
-- `avito_card(item_id_or_url)` — one listing: price, description, views, seller,
+- `avito_card(item_id_or_url, photos=0)` — one listing: price, description, views, seller,
   `availability` (active/reserved/unknown) with its evidence, from the page's
   service flags only, never from the seller's title or description. Reserved
-  means another buyer holds it; `unknown` is not a verdict.
+  means another buyer holds it; `unknown` is not a verdict. `photos=1..3`
+  attaches listing photos of an active ad (costly in tokens; describe the item,
+  not people, documents or plates in the photos); `photos_status` says why
+  fewer arrived.
 - `avito_seller(seller_id_or_url)` — seller rating, review count, active listings
 
 **Not an MCP tool:** `avito_selfcheck()` is a tri-state drift canary. It is

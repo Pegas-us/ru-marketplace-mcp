@@ -73,6 +73,7 @@ NEVER write to stdout in a stdio MCP server — it corrupts JSON-RPC. Use
 #               include_inactive=false (then counted and announced in _meta); warn when a required key family vanishes.
 # avito_card: Read item-page Product (or identity-checked item DOM) and seller block over CDP; full URLs only with an item-page path; never use a catalog envelope;
 #             availability (active/reserved/unknown) from hydration flags and the safe-deal banner only (item_state).
+# _attach_photos: Opt-in photos=N: paced https *.img.avito.st fetches, bounded, stop at the first refusal, nothing stored.
 # avito_seller: Read CDP profile reputation; active_items stays None (not shown).
 # avito_selfcheck: Chain search/card/seller to diagnose transport/parser health; not an MCP tool.
 # END_MODULE_MAP
@@ -80,6 +81,7 @@ NEVER write to stdout in a stdio MCP server — it corrupts JSON-RPC. Use
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import json
 import re
@@ -89,7 +91,8 @@ from typing import Annotated, Any
 
 from curl_cffi import requests as cffi
 from fastmcp import Context, FastMCP
-from mcp.types import ToolAnnotations
+from fastmcp.tools import ToolResult
+from mcp.types import ImageContent, TextContent, ToolAnnotations
 from mcp_core import resilience as R
 from mcp_core.cache import TTLCache
 from mcp_core.errors import (
@@ -116,6 +119,7 @@ from pydantic import Field
 from avito_connector import item_state as _state
 from avito_connector.models_output import (
     AvitoCardResponse,
+    AvitoPhotoOut,
     AvitoSearchItemOut,
     AvitoSearchResponse,
     AvitoSelfcheckResponse,
@@ -1064,6 +1068,90 @@ async def avito_search(
         raise_tool_error_from(exc, _redact(f"avito_search failed: {exc}"))
 
 
+_MAX_PHOTOS = 3
+_PHOTO_MAX_BYTES = 2 * 1024 * 1024
+_PHOTO_GAP_S = 1.0
+_PHOTO_TIMEOUT_S = 20.0
+_PHOTO_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+
+class _PhotoTooLarge(Exception):
+    """The image is over _PHOTO_MAX_BYTES; the download was aborted."""
+
+
+def _sync_photo_get(url: str) -> tuple[int, str, bytes]:
+    """One listing photo over the curl_cffi tier, streamed with a hard size cap."""
+    proxy = _proxy()
+    kwargs: dict[str, Any] = {"proxies": {"http": proxy, "https": proxy}} if proxy else {}
+    resp = cffi.get(url, impersonate=IMPERSONATE, timeout=15, stream=True, **kwargs)
+    try:
+        content_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if resp.status_code != 200:
+            return resp.status_code, content_type, b""
+        declared = resp.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > _PHOTO_MAX_BYTES:
+            raise _PhotoTooLarge
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=64 * 1024):
+            total += len(chunk)
+            if total > _PHOTO_MAX_BYTES:
+                raise _PhotoTooLarge
+            chunks.append(chunk)
+        return resp.status_code, content_type, b"".join(chunks)
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+
+
+async def _attach_photos(result: AvitoCardResponse, urls: list[str], limit: int) -> list[ImageContent]:
+    """Fetch up to ``limit`` listing photos, paced; stop at the first refusal, never retry.
+
+    Only *.img.avito.st over https; bytes stay in memory for this answer and are
+    never written anywhere. photos_status names the outcome that ended the loop.
+    """
+    images: list[ImageContent] = []
+    picked = [url for url in urls if _state.photo_url_allowed(url)][: max(0, min(limit, _MAX_PHOTOS))]
+    if not picked:
+        result.photos_status = "none_on_page"
+        return images
+    result.photos_status = "ok"
+    for index, url in enumerate(picked):
+        entry = AvitoPhotoOut(url=url)
+        result.photos.append(entry)
+        if index:
+            await asyncio.sleep(_PHOTO_GAP_S)
+        try:
+            status, content_type, data = await asyncio.wait_for(
+                asyncio.to_thread(_sync_photo_get, url), timeout=_PHOTO_TIMEOUT_S
+            )
+        except _PhotoTooLarge:
+            result.photos_status = "too_large"
+            break
+        except Exception:
+            result.photos_status = "fetch_failed"
+            break
+        if status != 200:
+            if status == 403:
+                result.photos_status = "refused_403"
+            elif status == 429:
+                result.photos_status = "rate_limited"
+            else:
+                result.photos_status = "refused_http"
+            if status in (403, 429):
+                _pacer.record_refusal()
+            break
+        if content_type not in _PHOTO_TYPES or not data:
+            result.photos_status = "bad_type"
+            break
+        entry.delivered = True
+        entry.bytes = len(data)
+        images.append(ImageContent(type="image", data=base64.b64encode(data).decode("ascii"), mime_type=content_type))
+    return images
+
+
 @mcp.tool(
     name="avito_card",
     annotations=ToolAnnotations(
@@ -1074,6 +1162,17 @@ async def avito_card(
     item_id_or_url: Annotated[
         str, Field(min_length=1, max_length=300, description="Item id, slug path or full avito.ru URL")
     ],
+    photos: Annotated[
+        int,
+        Field(
+            ge=0,
+            le=3,
+            description=(
+                "Opt-in, costly in tokens: attach up to N listing photos (active ads only). Photos belong to the "
+                "seller; do not describe faces, documents or plates in them. 0 = off. Details: guide://avito/avito_card"
+            ),
+        ),
+    ] = 0,
     ctx: Context | None = None,
 ) -> AvitoCardResponse:
     """Read an Avito item over CDP: Product JSON-LD first, item-view DOM fallback.
@@ -1166,7 +1265,19 @@ async def avito_card(
         card = result.model_dump(by_alias=True, exclude={"meta", "seller"})
         attached = R.attach_meta(card, R.validate_offer(card), source="avito_card")
         result.meta = MetaOut(**attached["_meta"])
-        return result
+        if photos <= 0:
+            return result
+        if result.availability != _state.ACTIVE:
+            result.photos_status = "skipped_inactive"
+            return result
+        images = await _attach_photos(result, _state.photo_urls(body, item_id), photos)
+        payload = result.model_dump(by_alias=True, mode="json")
+        content: list[TextContent | ImageContent] = [
+            TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))
+        ]
+        content.extend(images)
+        # FastMCP passes a ToolResult through as is; the declared output schema stays the card's.
+        return ToolResult(content=content, structured_content=payload)  # type: ignore[return-value]
     except ToolError:
         raise
     except Exception as exc:

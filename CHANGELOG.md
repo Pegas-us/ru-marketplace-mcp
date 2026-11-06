@@ -75,6 +75,16 @@
   `include_inactive=false` зарезервированные убираются, считаются в
   `excluded_inactive`, а в `_meta` появляется строка `info:`; `total_count` их
   по-прежнему включает. Лишних запросов к Avito нет.
+- Avito: `avito_card(photos=N)` — по запросу, затратно по токенам. N от 0 до 3,
+  по умолчанию 0 (выключено, ни одного лишнего запроса). Только для активного
+  объявления: до N фото 640×480 из галереи самой страницы, только https на
+  `*.img.avito.st`, пауза 1 с, не больше 2 МБ (загрузка обрывается), только
+  JPEG/PNG/WebP; фото приходят как MCP `ImageContent` после JSON-текста
+  карточки и не сохраняются. Первый отказ останавливает загрузку без повторов;
+  `photos_status` называет исход: `ok`, `skipped_inactive`, `none_on_page`,
+  `refused_403`, `rate_limited`, `refused_http`, `too_large`, `bad_type`,
+  `fetch_failed`. Фото принадлежат продавцу: лица, документы и номера на них не
+  описываются (подробно — `guide://avito/avito_card`).
 - Avito: listing reservation. `avito_card` returns `availability`
   (`active` / `reserved` / `unknown`) and `availability_evidence`. The status
   comes only from service data of the same rendered page: hydration flags
@@ -92,6 +102,16 @@
   reserved hits are dropped, counted in `excluded_inactive` and announced by
   an `info:` line in `_meta`; `total_count` still includes them. No extra
   requests to Avito.
+- Avito: `avito_card(photos=N)` — opt-in and costly in tokens. N is 0-3,
+  default 0 (off: no extra request at all). Active ads only: up to N 640×480
+  photos from the page's own gallery, https on `*.img.avito.st` only, 1 s
+  apart, at most 2 MB (the download is aborted past it), JPEG/PNG/WebP only;
+  they arrive as MCP `ImageContent` after the card's JSON text and are never
+  stored. The first refusal stops the loop, never retried; `photos_status`
+  names the outcome: `ok`, `skipped_inactive`, `none_on_page`, `refused_403`,
+  `rate_limited`, `refused_http`, `too_large`, `bad_type`, `fetch_failed`. The
+  photos belong to the seller: faces, documents and plates in them are not
+  described (details in `guide://avito/avito_card`).
 
 ## [2.8.2] - 2026-11-03
 
